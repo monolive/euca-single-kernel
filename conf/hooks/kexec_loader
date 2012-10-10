@@ -1,0 +1,45 @@
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+
+case $1 in
+	prereqs) prereqs; exit 0 ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+# Begin real processing below this line
+
+copy_exec /sbin/kexec /sbin
+
+force_load acpiphp
+
+MY_CONF="kexec-loader.conf"
+DEST_CONF="${DESTDIR}/conf/conf.d/${MY_CONF}"
+if [ -n "${KEXEC_LOADER_CONF}" ]; then
+	cp "${KEXEC_LOADER_CONF}" "${DEST_CONF}"
+elif [ -e "${CONFDIR}/kexec-loader.conf" ]; then
+	cp "${CONFDIR}/${MY_CONF}" "${DEST_CONF}"
+fi
+
+[ -z "${DEST_ROOT}" ] ||
+	echo "DEST_ROOT='${DEST_ROOT}'" >> "${DEST_CONF}"
+
+# some fixups so it will function as a real root device
+mkdir -p "${DESTDIR}/proc" "${DESTDIR}/sys" "${DESTDIR}/tmp" \
+	"${DESTDIR}/dev" "${DESTDIR}/root" "${DESTDIR}/var"
+
+cat > "${DESTDIR}/sbin/init" <<"EOF"
+#!/bin/sh
+# the filesystem is read-only
+# we want to keep it that way to avoid it getting dirty as it
+# will never be unmounted cleanly with kexec
+if ! out=$({ touch /conf/xx && rm /conf/xx; }); then
+	mount -n -t tmpfs none /tmp
+	cp -a /conf /tmp
+	mount -n --bind /tmp/conf /conf
+fi
+exec /init "$@"
+EOF
+chmod 755 "${DESTDIR}/sbin/init"
+
+# vi: ts=4 noexpandtab

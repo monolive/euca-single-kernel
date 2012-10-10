@@ -1,0 +1,87 @@
+#!/bin/sh
+set -e
+
+PREREQS=""
+case $1 in
+    prereqs) echo "${PREREQS}"; exit 0;;
+esac
+
+. /scripts/functions
+
+
+###
+### This runs right before exec of /sbin/init. The real root is
+### already mounted at rootmnt
+###
+TEMP_D=""
+RESTORE_FROM=""
+
+# figure out what disk ROOT is on
+rootdisk=`ls /dev/[xvsh]*da`
+partnum=1
+
+# remove partition 2
+parted ${rootdisk} rm 2
+
+
+# if growpart fails, exit.
+# we capture stderr because on success of dry-run, it writes
+# to stderr what it would do.
+out=$(growpart --dry-run "${rootdisk}" "${partnum}" 2>&1) ||
+	{ msg "${out}"; exit 1; }
+
+# if growpart would change something, --dry-run will write something like
+#  CHANGE: partition=1 start=2048 old: size=1024000 end=1026048 new: size=2089192,end=2091240
+# anything else, exit
+case "${out}" in
+	CHANGE:*) :;;
+	*) exit 0;;
+esac
+
+# There was something to do, unmount and resize
+umount "${rootmnt}" ||
+	fail "failed to umount ${rootmnt}";
+
+# Wait for any of the initial udev events to finish
+# This is to avoid any other processes using the block device that the
+# root partition is on, which would cause the sfdisk 'BLKRRPART' to fail.
+udevadm settle --timeout ${ROOTDELAY:-30} ||
+	error "GROWROOT: WARNING: udevadm settle prior to growpart failed"
+
+if out=$(growpart "${rootdisk}" "${partnum}" 2>&1); then
+	case "$out" in
+		CHANGED:*) echo "GROWROOT: $out";;
+    	NOCHANGE:*)
+			echo "GROWROOT: WARNING: expected to grow partition, but did not";;
+		*) echo "GROWROOT: unexpected output: ${out}"
+	esac
+else
+	echo "GROWROOT: WARNING: resize failed: $out"
+fi
+# Wait for the partition re-read events to complete 
+# so that the root partition is available when we try and mount it.
+udevadm settle --timeout ${ROOTDELAY:-30}
+
+# this is taken from 'mountroot' function
+#   see /usr/share/initramfs-tools/scripts/local
+FSTYPE=$(wait-for-root "${ROOT}" ${ROOTDELAY:-30})
+
+# mount rw for resize2fs.
+roflag="-r"
+[ "${readonly}" = "y" ] || roflag="-w"
+mount ${roflag} ${FSTYPE:+-t ${FSTYPE} }${ROOTFLAGS} ${ROOT} ${rootmnt} ||
+        fail "failed to re-mount ${ROOT}. this is bad!"
+
+# extend fs to take all space
+#resize2fs ${rootdisk}${partnum}
+#sleep 5
+# write to /etc/grownroot-grown. most likely this wont work (readonly)
+{ date --utc > "${rootmnt}/etc/growroot-grown" ; } >/dev/null 2>&1 || :
+
+# remount ro
+#roflag="-r"
+#mount -o remount ${roflag} ${FSTYPE:+-t ${FSTYPE} }${ROOTFLAGS} ${ROOT} ${rootmnt} ||
+#        fail "failed to re-mount ${ROOT}. this is bad!"
+
+
+# vi: ts=4 noexpandtab

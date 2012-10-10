@@ -1,0 +1,93 @@
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+
+case $1 in
+	prereqs) prereqs; exit 0;;
+esac
+
+. /scripts/functions
+
+# Begin real processing below this line
+#
+# This runs at the end.  The *real* root filesystem should
+# be mounted at ${rootmnt}.  We're just going to kexec load kernel from it
+#
+# search /boot/grub/grub.cfg for lines like:
+#	linux	/boot/vmlinuz-2.6.38-2-generic root=UUID=36286167-4eba-4a1e-a202-155c6baafa01 ro   quiet splash vt.handoff=7
+#	initrd	/boot/initrd.img-2.6.38-2-generic
+# if we don't find anything like that, then
+# just try loading /vmlinuz and /initrd.img
+
+setfrom() {
+    # set the variables KERNEL, KERNEL_ARGS, and INITRD from $1, $2, $3
+    # if and only if target and source are not empty
+    [ -z "${KERNEL}" -a -n "$1" ] && KERNEL=${1}
+    [ -z "${KERNEL_ARGS}" -a -n "$2" ] && KERNEL_ARGS="${2}"
+    [ -z "${INITRD}" -a -n "$3" ] && INITRD=${3}
+}
+
+cfgsrc="fallback"
+cfg="${rootmnt}/boot/grub/grub.cfg"
+if [ -e "${cfg}" ]; then
+	cfgsrc="grub/grub.cfg"
+	kern=$(awk '$1 == "linux" { print $2; exit(0); }' "$cfg")
+	kargs=$(awk '$1 == "linux" { $1 = ""; $2 = ""; print $0; exit(0); }' "${cfg}" )
+	initrd=$(awk '$1 == "initrd" { print $2; exit(0); }' "${cfg}")
+	setfrom "${rootmnt}/${kern}" "${kargs}" "${rootmnt}/${initrd}"
+elif [ -e "${rootmnt}/boot/grub/menu.lst" ]; then
+	cfgsrc="grub/menu.lst"
+	cfg="$rootmnt/boot/grub/menu.lst"
+	kern=$(awk '$1 == "kernel" { print $2; exit(0); }' "$cfg")
+	kargs=$(awk '$1 == "kernel" { $1 = ""; $2 = ""; print $0; exit(0); }' "${cfg}" )
+	initrd=$(awk '$1 == "initrd" { print $2; exit(0); }' "${cfg}")
+	setfrom "${rootmnt}/${kern}" "${kargs}" "${rootmnt}/${initrd}"
+elif [ -e "${rootmnt}/boot/grub/grub.conf" ]; then
+        cfgsrc="grub/grub.conf"
+	kern=$(awk '$1 == "kernel" { print $2; exit(0); }' "$cfg")
+	kargs=$(awk '$1 == "kernel" { $1 = ""; $2 = ""; print $0; exit(0); }' "${cfg}" )
+	initrd=$(awk '$1 == "initrd" { print $2; exit(0); }' "${cfg}")
+	setfrom "${rootmnt}/${kern}" "${kargs}" "${rootmnt}/${initrd}"
+fi
+
+[ -f "${rootmnt}/initrd.img" ] && initrd="${rootmnt}/initrd.img" || initrd=""
+[ -f "${rootmnt}/vmlinuz" ] && kern="${rootmnt}/vmlinuz" || kern=""
+if [ -n "${KERNEL_ARGS_FALLBACK}" ]; then
+	# eval so that KERNEL_ARGS_FALLBACK could use 'ROOT' or 'rootmnt'
+	eval kargs="${KERNEL_ARGS_FALLBACK}"
+else
+	kargs="root=${ROOT} ro console=ttyS0"
+fi
+setfrom "${kern}" "${kargs}" "${initrd}"
+
+KERNEL=${KERNEL# }
+INITRD=${INITRD# }
+# the /sbin/init replacement will set this variable for us.  we
+# then append it to KERNEL_ARGS.  The next time the /sbin/init
+# replacement runs (post kexec), it will see that in /proc/cmdline and invoke
+# the real init, to stop the loop.
+case " ${KERNEL_ARGS} " in
+	*\ kloaded=1*) :;;
+	*) KERNEL_ARGS="${KERNEL_ARGS} kloaded=1";;
+esac
+
+xrootmnt=${rootmnt%/}/ # xrootmnt will have a trailing slash
+
+kexec -l "$KERNEL" ${INITRD:+"--initrd=${INITRD}"} \
+	"--append=${KERNEL_ARGS}"
+
+now=$(date --utc)
+timeup=""
+if [ -r /proc/uptime ]; then
+	read uptime idle < /proc/uptime
+	timeup="[up $uptime seconds] "
+fi
+cat <<EOF
+kexec-loader: ======== $now ${timeup}========
+kexec-loader: Loading kernel/ramdisk from root ${DEST_ROOT} per $cfgsrc
+kexec-loader: kernel=${KERNEL#${xrootmnt}} initrd=${INITRD#${xrootmnt}}
+kexec-loader: kernel_args=${KERNEL_ARGS}
+EOF
+
+exec /sbin/kexec -e
+# vi: ts=4 noexpandtab

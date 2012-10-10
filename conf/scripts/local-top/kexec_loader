@@ -1,0 +1,68 @@
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+
+case $1 in
+	prereqs) prereqs; exit 0;;
+esac
+
+. /scripts/functions
+
+# Begin real processing below this line
+#
+# This runs right before the 'wait-for-root' loop
+#
+MY_CONF=kexec-loader.conf
+#
+ORIG_ROOTDELAY=${ROOTDELAY}
+ORIG_ROOT=${ROOT}
+ROOTDELAY=300
+
+# the conf ${MY_CONF} in /conf/conf.d/${MY_CONF} is already
+# sourced by the main 'init'
+
+if [ "${NO_EPHEMERAL_CONFIG:-0}" != "0" ]; then
+	FSTYPE=$(wait-for-root "${ROOT}" 30) || panic "sorry, no ${ROOT}"
+	mp="/tmp/tmp_mp"
+	mkdir "${mp}" || :
+	mount -o ro ${ROOT} "${mp}"
+	for f in "${MP}/${MY_CONF}" "${MP}/etc/${MY_CONF}"; do
+		[ -f "${f}" ] || continue
+		. "${f}"
+		break
+	done
+	umount "${mp}"
+fi
+
+[ -n "${DEST_ROOT}" ] || DEST_ROOT=${ORIG_ROOT}
+
+case "${DEST_ROOT}" in
+	"${ORIG_ROOT}") :;;
+	LABEL=*)
+		DEST_ROOT="/dev/disk/by-label/${DEST_ROOT#LABEL=}"
+		;;
+	UUID=*)
+		DEST_ROOT="/dev/disk/by-uuid/${DEST_ROOT#UUID=}"
+		;;
+esac
+ROOT=${DEST_ROOT}
+
+cat > /conf/param.conf <<EOF
+ORIG_ROOT="${ORIG_ROOT}"
+DEST_ROOT="${DEST_ROOT}"
+ROOTDELAY=${ROOTDELAY:-300}
+ROOT=${ROOT}
+export ORIG_ROOT DEST_ROOT
+EOF
+
+if [ ! -e "${DEST_ROOT}" ]; then
+	now=$(date --utc)
+	echo
+cat <<EOF
+kexec-loader: ============= $now ============
+kexec-loader: Waiting ${ROOTDELAY} seconds for ${DEST_ROOT} to appear.
+kexec-loader: Connect a volume to this instance to continue booting.
+EOF
+fi
+
+# vi: ts=4 noexpandtab
