@@ -1,4 +1,4 @@
-# euca-kernel
+# euca-single-kernel
 
 Provides a single kernel/ramdisk for all Linux EMI. The EMI is initially booted using kernel / ramdisk. 
 
